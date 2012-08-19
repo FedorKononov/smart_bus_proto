@@ -94,14 +94,21 @@ void Pack_crc(unsigned char *ptr, unsigned char len)
     *ptr = crc;
 }
 
-void *array_concat(const void *a, size_t an,
-                   const void *b, size_t bn, size_t s)
+void array_concat(const void *a, size_t an,
+                   const void *b, size_t bn, size_t s, unsigned char *res)
 {
-    unsigned char *p = malloc(s * (an + bn));
+    int i;
+
+    char *p = malloc(s * (an + bn));
     memcpy(p, a, an * s);
     memcpy(p + an * s, b, bn * s);
 
-    return p;
+    for (i = 0; i < (an + bn); i++){
+        res[i] = p[i];
+        printf("%d : 0x%x\n", i, p[i]);
+    }
+
+    free(p);
 }
 
 int main(int argc, char const *argv[])
@@ -113,10 +120,11 @@ int main(int argc, char const *argv[])
     int broadcast = 1;
     unsigned char hdl_proto_packet[16];
     unsigned char data_packet[13];
-    unsigned char *full_command;
+    unsigned char full_command[29];
+
     //char broadcast = '1'; // if that doesn't work, try this
 
-    if (argc != 2) {
+    if (argc != 3) {
         fprintf(stderr,"usage: broadcaster hostname message\n");
         exit(1);
     }
@@ -143,7 +151,6 @@ int main(int argc, char const *argv[])
     their_addr.sin_addr = *((struct in_addr *)he->h_addr);
     memset(their_addr.sin_zero, '\0', sizeof their_addr.sin_zero);
 
-
     /**
      * filling packet
      */
@@ -165,22 +172,6 @@ int main(int argc, char const *argv[])
     hdl_proto_packet[14] = 0xAA; // leading code
     hdl_proto_packet[15] = 0xAA; // leading code
 
-   /* ligth_packet[16] = 0x0D; // data length
-    ligth_packet[17] = 0x01; // subnet id
-    ligth_packet[18] = 0xFE; // device id
-    ligth_packet[19] = 0xFF; // original device type: higher then 8
-    ligth_packet[20] = 0xFE; // original device type: lower then 8
-    ligth_packet[21] = 0x00; // operate code: higher then 8
-    ligth_packet[22] = 0x31; // operate code: lower then 8
-    ligth_packet[23] = 0x01; // subnet ID of targeted device
-    ligth_packet[24] = 0x5F; // device ID of targeted device
-    ligth_packet[25] = 0x03; // additional, channel No
-    ligth_packet[26] = 0x64; // additional, intensity
-    //ligth_packet[27] = 0x00; // additional, channel running time, higher then 8
-    //ligth_packet[28] = 0x00; // additional, channel running time, lower then 8
-    ligth_packet[27] = 0x71; // CRC, higher then 8
-    ligth_packet[28] = 0x01; // CRC, lower then 8*/
-
     data_packet[0]  = 0x0D; // data length
     data_packet[1]  = 0x01; // subnet id
     data_packet[2]  = 0xFE; // device id
@@ -191,17 +182,15 @@ int main(int argc, char const *argv[])
     data_packet[7]  = 0x01; // subnet ID of targeted device
     data_packet[8]  = 0x5F; // device ID of targeted device
     data_packet[9]  = 0x03; // additional, channel No
-    data_packet[10] = 0x64; // additional, intensity
+    data_packet[10] = atoi(argv[2]); // additional, intensity
     data_packet[11] = 0x00; // CRC, higher then 8
     data_packet[12] = 0x00; // CRC, lower then 8
 
     // generate 2 byte crc
     Pack_crc(data_packet, sizeof(data_packet) - 2);
 
-    full_command = array_concat(hdl_proto_packet, sizeof(hdl_proto_packet), data_packet, sizeof(data_packet), sizeof(unsigned char));
-
-    printf("0x%x\n", *(full_command+sizeof(char)*13));
-printf("%d ---  %d ---- %d\n", sizeof(hdl_proto_packet), sizeof(data_packet), sizeof(full_command));
+    array_concat(hdl_proto_packet, sizeof(hdl_proto_packet), data_packet, sizeof(data_packet), sizeof(unsigned char), full_command);
+   
     if ((numbytes=sendto(sockfd, full_command, sizeof(full_command), 0,
              (struct sockaddr *)&their_addr, sizeof their_addr)) == -1) {
         perror("sendto");
