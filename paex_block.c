@@ -8,6 +8,8 @@
 #define FRAMES_PER_BUFFER (320)
 #define NUM_CHANNELS    (1)
 #define NUM_SECONDS     (2)
+#define NOISE_THRESHOLD (21000)
+#define QUIT_HOLDING_TIME (85)
 
 /* Select sample format. */
 
@@ -15,21 +17,30 @@
 #define SAMPLE_SIZE (2)
 #define SAMPLE_SILENCE  (0)
 #define CLEAR(a) memset((a), 0,  FRAMES_PER_BUFFER * NUM_CHANNELS * SAMPLE_SIZE)
-#define PRINTF_S_FORMAT "%d"
 
+struct chunk {
+  char *data;
+  struct chunk *next;
+};
 
-int main(void)
+int main(int argc, char **argv)
 {
 	PaStreamParameters inputParameters;
 	PaStream *stream = NULL;
 	PaError err;
 
 	char *sampleBlock;
-	int i;
+	int i, j;
 	int numBytes;
+	char val;
+	double average;
+	int silence_state = 0;
+	struct chunk *buffer_head;
+	struct chunk *buffer;
+	struct chunk *tmp_buffer;
 
 	numBytes = FRAMES_PER_BUFFER * NUM_CHANNELS * SAMPLE_SIZE ;
-	sampleBlock = (char *) malloc( numBytes );
+	sampleBlock = (char *) malloc(numBytes);
 
 	if (sampleBlock == NULL)
 	{
@@ -67,8 +78,77 @@ int main(void)
 	while (1)
 	{
 		Pa_ReadStream(stream, sampleBlock, FRAMES_PER_BUFFER);
+		//fwrite(sampleBlock, 2, numBytes/2, stdout);fflush(stdout);
 
-		fwrite(sampleBlock, 2, numBytes/2, stdout);fflush(stdout);
+		// получаем среднее
+		average = 0.0;
+		for (j=0; j<FRAMES_PER_BUFFER*2; j++)
+		{
+			val = sampleBlock[j];
+			if (val < 0) val = -val; // ABS
+			average += val;
+		}
+		
+		// если поймана речь начинам писать буфер и активируем счетчик тишины для прекрашения записи если в эфире будет тишина чере некоторое время
+		if (average > NOISE_THRESHOLD)
+		{
+			if (silence_state == 0)
+			{
+				//printf("record start\n");
+				silence_state = 1;
+
+				// инициализируем голову буфера
+				buffer_head = malloc(sizeof(struct chunk));
+				buffer = buffer_head;
+			} else
+				silence_state = 2;
+			
+		}
+
+		if (silence_state > 0)
+		{
+			if (silence_state > 1)
+			{
+				// инициаллизируем следующий чанк
+				buffer->next = malloc(sizeof(struct chunk));
+				buffer = buffer->next;
+			}
+
+			//printf("sample average = %lf\n", average);
+		
+			// кодируем на лету
+
+			// пишем чанк в буфер
+			buffer->data = (char *) malloc(numBytes);
+			memcpy(buffer->data, sampleBlock, numBytes);
+			buffer->next = 0;
+
+			// тишину мы тоже пишим но увеличиваем счетчик
+			if (average < NOISE_THRESHOLD)
+				silence_state++;
+		
+
+			if (silence_state > QUIT_HOLDING_TIME)
+			{
+				//printf("record stop\n");
+
+				// деактивируем счетчик тишины
+				silence_state = 0;
+
+				// отправляем
+
+				// чистим буфер
+				buffer = buffer_head;
+				while (buffer != NULL)
+				{
+					fwrite(buffer->data, 2, numBytes/2, stdout);fflush(stdout);
+					tmp_buffer = buffer;
+					buffer = buffer->next;
+					free(tmp_buffer);
+				}
+				buffer_head = NULL;
+			}
+		}
 	}
 
 	err = Pa_StopStream(stream);
