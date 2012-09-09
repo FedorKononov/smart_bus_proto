@@ -3,13 +3,19 @@
 #include <string.h>
 #include <portaudio.h>
 #include <speex/speex.h>
+#include <fcntl.h>
+
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #define SAMPLE_RATE  16000
 #define FRAMES_PER_BUFFER 320
 #define NUM_CHANNELS    1
 #define NUM_SECONDS     2
 #define NOISE_THRESHOLD 21000
-#define QUIT_HOLDING_TIME 85
+#define QUIT_HOLDING_TIME 40
 #define SPEEX_FRAME_LEN 110
 
 /* Select sample format. */
@@ -19,19 +25,36 @@
 #define SAMPLE_SILENCE  0
 #define CLEAR(a) memset((a), 0,  FRAMES_PER_BUFFER * NUM_CHANNELS * SAMPLE_SIZE)
 
+#define PORT "80" // the port client will be connecting to 
+
+#define MAXDATASIZERESP 400 // max number of bytes we can get at once 
+
+// get sockaddr, IPv4 or IPv6:
+void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
+
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
 struct chunk {
-  short *data;
-  struct chunk *next;
+	short *data;
+	struct chunk *next;
 };
+
 
 int main(int argc, char **argv)
 {
+	FILE *rec_file;
+
 	PaStreamParameters inputParameters;
 	PaStream *stream = NULL;
 	PaError err;
 
-	char *sampleBlock;
-	int i, j;
+	char *sampleBlock, *sent_buffer;
+	int i, j, sent_buffer_len;
 	int numBytes;
 	char val;
 	double average;
@@ -40,6 +63,13 @@ int main(int argc, char **argv)
 	struct chunk *buffer;
 	struct chunk *tmp_buffer;
 
+	int sockfd, sock_numbytes;  
+    char resp_buf[MAXDATASIZERESP];
+    struct addrinfo hints, *servinfo, *p;
+    int rv;
+    char *query;
+    char *tpl = "POST /speech-api/v1/recognize?xjerr=1&pfilter=1&client=chromium&lang=ru-RU HTTP/1.1\r\nHost: www.google.com\r\nUser-Agent: fedor\r\nConnection: close\r\nContent-Type: audio/x-speex-with-header-byte; rate=16000\r\nContent-Length: %d\r\n\r\n";
+
 	// speex
 	char cbits[SPEEX_FRAME_LEN + 1];
 	int nbBytes, qualty, vbr;
@@ -47,6 +77,40 @@ int main(int argc, char **argv)
 	void *spex_state;
 	/*Holds bits so they can be read and written to by the Speex routines*/
 	SpeexBits spex_bits;
+
+	// Creating socket to google
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	if ((rv = getaddrinfo("www.google.com", PORT, &hints, &servinfo)) != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		return 1;
+	}
+
+	// loop through all the results and connect to the first we can
+	for(p = servinfo; p != NULL; p = p->ai_next) {
+		if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+			perror("client: socket");
+			continue;
+		}
+
+		if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+			close(sockfd);
+			perror("client: connect");
+			continue;
+		}
+
+		break;
+	}
+
+	if (p == NULL) {
+		fprintf(stderr, "client: failed to connect\n");
+		return 2;
+	}
+	freeaddrinfo(servinfo); // all done with this structure
+
+	rec_file = fopen("record", "w");
 
 	// speex_bits_init() does not initialize all of the |bits| struct.
 	memset(&spex_bits, 0, sizeof(spex_bits));
@@ -119,7 +183,7 @@ int main(int argc, char **argv)
 		{
 			if (silence_state == 0)
 			{
-				//printf("record start\n");
+				printf("record start\n");
 				silence_state = 1;
 
 				// инициализируем голову буфера
@@ -139,7 +203,7 @@ int main(int argc, char **argv)
 				buffer = buffer->next;
 			}
 
-			//printf("sample average = %lf\n", average);
+			printf("sample average = %lf\n", average);
 
 			// пишем чанк в буфер
 			buffer->data = (short *) malloc(numBytes);
@@ -153,18 +217,21 @@ int main(int argc, char **argv)
 
 			if (silence_state > QUIT_HOLDING_TIME)
 			{
-				//printf("record stop\n");
+				printf("record stop\n");
+
+				// подготавливаем буфер для суммы всех фреймов
+				sent_buffer = (char *) malloc(numBytes * silence_state);
+				sent_buffer_len = 0;
 
 				// деактивируем счетчик тишины
 				silence_state = 0;
-
-				// отправляем
 
 				// чистим буфер
 				buffer = buffer_head;
 				while (buffer != NULL)
 				{
-					//fwrite(buffer->data, 2, numBytes/2, stdout);fflush(stdout);
+					fwrite(buffer->data, 2, numBytes/2, rec_file);
+
 					/*Flush all the bits in the struct so we can encode a new frame*/
 					speex_bits_reset(&spex_bits);
 
@@ -174,20 +241,46 @@ int main(int argc, char **argv)
 					/*Copy the bits to an array of char that can be written*/
 					nbBytes = speex_bits_write(&spex_bits, cbits, SPEEX_FRAME_LEN);
 
-					/*Write the size of the frame first. This is what sampledec expects but
-					it's likely to be different in your own application*/
-					//fwrite(&nbBytes, sizeof(int), 1, stdout);
+					// write header
+					//fwrite(&nbBytes, 1, 1, rec_file);
+					memcpy(sent_buffer + sent_buffer_len, &nbBytes, 1);
 
-					fwrite(&nbBytes, 1, 1, stdout);
+					// write the compressed data
+					//fwrite(cbits, 1, nbBytes, rec_file);
+					memcpy(sent_buffer + sent_buffer_len + 1, cbits, nbBytes);
 
-					/*Write the compressed data*/
-					fwrite(cbits, 1, nbBytes, stdout);
+					sent_buffer_len = sent_buffer_len + nbBytes + 1;
 
 					tmp_buffer = buffer;
 					buffer = buffer->next;
 					free(tmp_buffer);
 				}
 				buffer_head = NULL;
+
+				// отправляем
+				query = (char *)malloc(strlen(tpl));
+
+				sprintf(query, tpl, sent_buffer_len);
+
+				// send http query
+				if ((sock_numbytes=send(sockfd, query, strlen(query), 0)) == -1) {
+					perror("sendto");
+					exit(1);
+				}
+				// send buffer
+				if ((sock_numbytes=send(sockfd, sent_buffer, sent_buffer_len, 0)) == -1) {
+					perror("sendto");
+					exit(1);
+				}
+
+				while ((sock_numbytes = recv(sockfd, resp_buf, MAXDATASIZERESP-1, 0)) > 0) {
+					resp_buf[sock_numbytes] = '\0';
+
+					printf("%s\n", resp_buf);
+				}
+				fclose(rec_file);
+				//fwrite(sent_buffer, 1, sent_buffer_len, stdout);
+				return 1;
 			}
 		}
 	}
@@ -200,6 +293,8 @@ int main(int argc, char **argv)
 	free(sampleBlock);
 
 	Pa_Terminate();
+
+	close(sockfd);
 
 	/*Destroy the encoder state*/
 	speex_encoder_destroy(spex_state);
@@ -216,6 +311,8 @@ int main(int argc, char **argv)
 
 		free(sampleBlock);
 		Pa_Terminate();
+
+		close(sockfd);
 
 		/*Destroy the encoder state*/
 		speex_encoder_destroy(spex_state);
