@@ -68,7 +68,11 @@ int main(int argc, char **argv)
     struct addrinfo hints, *servinfo, *p;
     int rv;
     char *query;
-    char *tpl = "POST /speech-api/v1/recognize?xjerr=1&pfilter=1&client=chromium&lang=ru-RU HTTP/1.1\r\nHost: www.google.com\r\nUser-Agent: fedor\r\nConnection: close\r\nContent-Type: audio/x-speex-with-header-byte; rate=16000\r\nContent-Length: %d\r\n\r\n";
+    char *tpl = "POST /speech-api/v1/recognize?xjerr=1&pfilter=1&client=chromium&lang=ru-RU HTTP/1.1\r\nHost: www.google.com\r\nUser-Agent: fedor\r\nConnection: keep-alive\r\nContent-Type: audio/x-speex-with-header-byte; rate=16000\r\nContent-Length: %d\r\n\r\n";
+    // non blocking-socket
+	fd_set read_flags,write_flags; // the flag sets to be used
+	struct timeval waitd;          // the max wait time for an event
+	int stat, soc_f;  
 
 	// speex
 	char cbits[SPEEX_FRAME_LEN + 1];
@@ -77,6 +81,10 @@ int main(int argc, char **argv)
 	void *spex_state;
 	/*Holds bits so they can be read and written to by the Speex routines*/
 	SpeexBits spex_bits;
+
+	// non blocking setup
+	waitd.tv_sec = 1;  // Make select wait up to 1 second for data
+	waitd.tv_usec = 0; // and 0 milliseconds.
 
 	// Creating socket to google
 	memset(&hints, 0, sizeof hints);
@@ -94,12 +102,15 @@ int main(int argc, char **argv)
 			perror("client: socket");
 			continue;
 		}
-
+		
 		if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
 			close(sockfd);
 			perror("client: connect");
 			continue;
 		}
+		fcntl(sockfd, F_SETFL, O_NONBLOCK);
+		//soc_f = fcntl(sockfd, F_GETFL, 0); // Get socket flags
+		//fcntl(sockfd, F_SETFL, soc_f | O_NONBLOCK); // set non block socket
 
 		break;
 	}
@@ -264,23 +275,51 @@ int main(int argc, char **argv)
 
 				// send http query
 				if ((sock_numbytes=send(sockfd, query, strlen(query), 0)) == -1) {
-					perror("sendto");
-					exit(1);
+					printf("headers sent error\n");
+					return -1;
 				}
 				// send buffer
 				if ((sock_numbytes=send(sockfd, sent_buffer, sent_buffer_len, 0)) == -1) {
-					perror("sendto");
-					exit(1);
+					printf("data sent error\n");
+					return -1;
 				}
 
-				while ((sock_numbytes = recv(sockfd, resp_buf, MAXDATASIZERESP-1, 0)) > 0) {
-					resp_buf[sock_numbytes] = '\0';
+				while (1){
+					printf("slect() loop\n");
 
-					printf("%s\n", resp_buf);
+					FD_ZERO(&read_flags); // Zero the flags ready for using
+
+					// Set the sockets read flag, so when select is called it examines
+					// the read status of available data.
+					FD_SET(sockfd, &read_flags);
+
+					stat = select(sockfd+1, &read_flags, NULL, NULL, &waitd);
+
+					if (stat < 0) {
+						printf("socket select error\n");
+						return -1;
+					}
+
+					// Check if data is available to read
+					if (FD_ISSET(sockfd, &read_flags)) {
+						FD_CLR(sockfd, &read_flags);
+
+						sock_numbytes = recv(sockfd, resp_buf, MAXDATASIZERESP-1, 0);
+
+						resp_buf[sock_numbytes] = '\0';
+
+						printf("%s", resp_buf);
+
+					} else
+						break;
 				}
+
+				printf("passed recv()\n");
 				fclose(rec_file);
+				free(query);
+				free(sent_buffer);
 				//fwrite(sent_buffer, 1, sent_buffer_len, stdout);
-				return 1;
+				//return 1;
 			}
 		}
 	}
