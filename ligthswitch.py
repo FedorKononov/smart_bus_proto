@@ -1,7 +1,7 @@
 from socket import *
 from struct import *
 
-import alsaaudio, time, audioop
+#import alsaaudio, time, audioop
 
 crc_tab = [
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
@@ -70,12 +70,13 @@ def pack_crc(packet):
     mask = 255 # mask 8 bit 
 
     for x in range(0, len(packet)-2):
-
+        print '1', crc
         dat = (crc >> 8) & mask # get last 8 bit
 
         crc <<= 8
-        
+        print '2', crc, ' - ', dat, ' - ', packet[x], ' - ', (dat ^ packet[x])
         crc ^= crc_tab[dat ^ packet[x]]
+        print '3', crc
 
     packet[len(packet)-2] = ((crc >> 8) & mask) # get last 8 bit
 
@@ -109,11 +110,11 @@ data_packet.append(0xFE) # device id
 data_packet.append(0xFF) # original device type: higher then 8
 data_packet.append(0xFE) # original device type: lower then 8
 data_packet.append(0x00) # operate code: higher then 8
-data_packet.append(0x31) # operate code: lower then 8
+data_packet.append(0x31) # Openerate code: lower then 8
 data_packet.append(0x01) # subnet ID of targeted device
 data_packet.append(0x5F) # device ID of targeted device
 data_packet.append(0x03) # additional, channel No
-data_packet.append(0x64) # additional, intensity
+data_packet.append(0x28) # additional, intensity
 data_packet.append(0x00) # CRC, higher then 8
 data_packet.append(0x00) # CRC, lower then 8
 
@@ -132,7 +133,7 @@ for x in range(0, len(udp_packet)):
 sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
 sock.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
 
-#sock.sendto(hexstring, ('192.168.10.255', 6000))
+sock.sendto(hexstring, ('192.168.10.255', 6000))
 
 
 
@@ -142,12 +143,12 @@ sock.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
 # Open the device in nonblocking capture mode. The last argument could
 # just as well have been zero for blocking mode. Then we could have
 # left out the sleep call in the bottom of the loop
-inp = alsaaudio.PCM(alsaaudio.PCM_CAPTURE,alsaaudio.PCM_NONBLOCK)
+#inp = alsaaudio.PCM(alsaaudio.PCM_CAPTURE,alsaaudio.PCM_NONBLOCK)
 
 # Set attributes: Mono, 8000 Hz, 16 bit little endian samples
-inp.setchannels(1)
-inp.setrate(8000)
-inp.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+#inp.setchannels(1)
+#inp.setrate(8000)
+#inp.setformat(alsaaudio.PCM_FORMAT_S16_LE)
 
 # The period size controls the internal number of frames per period.
 # The significance of this parameter is documented in the ALSA api.
@@ -156,19 +157,19 @@ inp.setformat(alsaaudio.PCM_FORMAT_S16_LE)
 # This means that the reads below will return either 320 bytes of data
 # or 0 bytes of data. The latter is possible because we are in nonblocking
 # mode.
-inp.setperiodsize(160)
+#inp.setperiodsize(160)
 
-while True:
-    # Read data from device
-    l,data = inp.read()
-    if l:
-        # Return the maximum of the absolute value of all samples in a fragment.
-        max = audioop.max(data, 2)
-        #print max
-        if (max > 28000):
-                print max
-                sock.sendto(hexstring, ('192.168.10.255', 6000))
-    time.sleep(.001)
+#while True:
+#    # Read data from device
+#    l,data = inp.read()
+#    if l:
+#        # Return the maximum of the absolute value of all samples in a fragment.
+#        max = audioop.max(data, 2)
+#        #print max
+#        if (max > 28000):
+#                print max
+#                sock.sendto(hexstring, ('192.168.10.255', 6000))
+#    time.sleep(.001)
 
 
 
